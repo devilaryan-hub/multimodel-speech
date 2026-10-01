@@ -50,18 +50,17 @@ def _load_transcript(wav_path: Path) -> str:
     txt_path = wav_path.with_suffix(".txt")
     if not txt_path.exists():
         raise FileNotFoundError(f"Transcript not found: {txt_path}")
-    return txt_path.read_text(encoding="utf-8").strip()
+    return txt_path.read_text(encoding="utf-8-sig").strip()
 
 
 def _words_for(wav_path: Path) -> list:
-    """Get word timings via proportional alignment (no real audio needed for labels)."""
-    import librosa
+    """Get word timings via configured alignment backend for accurate region boundaries."""
+    from src.features.forced_align import align_transcript
+    from src.features.transcript import Word
 
     transcript = _load_transcript(wav_path)
-    waveform, _ = librosa.load(str(wav_path), sr=SAMPLE_RATE, mono=True)
-    duration = len(waveform) / SAMPLE_RATE
-    tokens = tokenize(transcript)
-    return estimate_word_times(tokens, duration)
+    aligned = align_transcript(wav_path, transcript)
+    return [Word(text=w["word"], start=w["start"], end=w["end"]) for w in aligned]
 
 
 # ---------------------------------------------------------------------------

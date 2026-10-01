@@ -15,11 +15,15 @@ Usage:
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path when run as `python scripts/evaluate_detections.py`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import csv
-import sys
 from collections import defaultdict
-from pathlib import Path
 from typing import NamedTuple
 
 from src.config import LABELS_DIR
@@ -204,9 +208,39 @@ def main(argv: list[str] | None = None) -> None:
                 )
             )
 
-    # For standalone verification when no predictions exist yet, prints GT stats
-    print(f"Loaded {sum(len(v) for v in gt_by_file.values())} ground-truth regions across {len(gt_by_file)} files.")
+    # Check for prediction JSONs in outputs/
+    from src.config import OUTPUTS_DIR
+    pred_by_file: dict[str, list[Interval]] = defaultdict(list)
+    if OUTPUTS_DIR.exists():
+        for json_path in OUTPUTS_DIR.glob("*_eval.json"):
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                # Match candidate audio file name: audio_id or file stem
+                audio_id = data.get("audio_id", "")
+                wav_filename = f"{audio_id}.wav" if not audio_id.endswith(".wav") else audio_id
+                for r in data.get("flaw_regions", []):
+                    pred_by_file[wav_filename].append(
+                        Interval(
+                            float(r["start"]),
+                            float(r["end"]),
+                            r["flaw_type"],
+                        )
+                    )
+            except Exception as exc:
+                print(f"Warning: could not parse {json_path}: {exc}", file=sys.stderr)
+
+    total_gt = sum(len(v) for v in gt_by_file.values())
+    total_pred = sum(len(v) for v in pred_by_file.values())
+    print(f"Loaded {total_gt} ground-truth regions across {len(gt_by_file)} files.")
+    print(f"Loaded {total_pred} predicted regions across {len(pred_by_file)} evaluated files.")
+
+    if pred_by_file:
+        results = evaluate_records(gt_by_file, pred_by_file, iou_thresh=args.iou_thresh)
+        print_report(results)
+    else:
+        print("No predictions found in outputs/. Run pipeline evaluation to generate predictions.")
 
 
 if __name__ == "__main__":
+    import json
     main()

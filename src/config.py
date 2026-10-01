@@ -73,7 +73,7 @@ OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
 # ---------------------------------------------------------------------------
 # Forced Alignment Backend ("whisperx" | "torchaudio" | "proportional")
 # ---------------------------------------------------------------------------
-ALIGNMENT_BACKEND: str = "whisperx"
+ALIGNMENT_BACKEND: str = "torchaudio"
 
 # ---------------------------------------------------------------------------
 # DTW alignment

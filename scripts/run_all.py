@@ -13,14 +13,21 @@ Workflow:
 
 Usage:
     python scripts/run_all.py [--raw-dir PATH] [--skip-tests]
+
+The --skip-tests flag skips the slow pytest step for faster end-to-end runs.
+The pytest step always uses the same Python interpreter as this script (sys.executable).
 """
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path when run as `python scripts/run_all.py`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import json
 import subprocess
-import sys
-from pathlib import Path
 
 from src.config import (
     ALIGNMENT_BACKEND,

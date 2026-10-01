@@ -135,17 +135,25 @@ def _align_with_whisperx(
     transcript: str,
     duration: float,
 ) -> list[AlignedWord]:
-    """Align using WhisperX forced alignment model."""
-    import whisperx
+    """Align using WhisperX forced alignment model.
+
+    Raises:
+        ImportError: If whisperx is not installed.
+        RuntimeError: If whisperx alignment fails.
+    """
+    try:
+        import whisperx  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "whisperx is not installed. Install it or set ALIGNMENT_BACKEND='torchaudio'."
+        )
 
     device = "cpu"
-    # Load whisperx alignment model for english
     align_model, metadata = whisperx.load_align_model(
         language_code="en",
         device=device,
     )
     audio = whisperx.load_audio(str(audio_path))
-    # Format fake segment containing transcript
     fake_transcript = [{"text": transcript, "start": 0.0, "end": duration}]
     result = whisperx.align(
         fake_transcript,
@@ -170,43 +178,75 @@ def _align_with_torchaudio(
     words: list[str],
     duration: float,
 ) -> list[AlignedWord]:
-    """Align using Torchaudio MMS_FA forced alignment pipeline."""
+    """Align using Torchaudio MMS_FA forced alignment pipeline.
+
+    Uses blank=0 (not blank_id=0 which is not a valid parameter).
+    Character-level token spans are grouped back into per-word intervals by
+    tracking how many tokens each word contributes.
+
+    inspect.signature(torchaudio.functional.forced_align):
+        (log_probs, targets, input_lengths=None, target_lengths=None, blank=0)
+
+    Raises:
+        RuntimeError: On any torchaudio alignment failure.
+    """
     import torch
     import torchaudio
 
     bundle = torchaudio.pipelines.MMS_FA
     model = bundle.get_model()
-    labels = bundle.get_labels()
     dictionary = bundle.get_dict()
 
     waveform, sr = torchaudio.load(str(audio_path))
+    # Convert stereo → mono
+    if waveform.ndim > 1 and waveform.size(0) > 1:
+        waveform = torch.mean(waveform, dim=0, keepdim=True)
     if sr != bundle.sample_rate:
         waveform = torchaudio.functional.resample(waveform, sr, bundle.sample_rate)
 
-    clean_words = [w.lower().strip() for w in words]
-    clean_text = " ".join(clean_words)
-    tokens = [dictionary[c] for c in clean_text if c in dictionary]
+    # Build word→token mapping, preserving only words with at least 1 known char
+    BLANK_CHAR = "-"
+    word_token_lists: list[list[int]] = []
+    aligned_words_texts: list[str] = []
+    all_tokens: list[int] = []
+
+    for w in words:
+        chars = [c for c in w.lower() if c in dictionary and c != BLANK_CHAR]
+        if chars:
+            toks = [dictionary[c] for c in chars]
+            word_token_lists.append(toks)
+            aligned_words_texts.append(w)
+            all_tokens.extend(toks)
+
+    if not all_tokens:
+        raise RuntimeError("No mappable characters found in transcript for torchaudio MMS_FA alignment.")
 
     with torch.inference_mode():
         emission, _ = model(waveform)
-        token_spans = torchaudio.functional.forced_align(
-            emission, torch.tensor([tokens]), blank_id=0
+        targets = torch.tensor([all_tokens], dtype=torch.int32)
+        # FIX: use blank=0, not blank_id=0
+        aligned_tokens, scores = torchaudio.functional.forced_align(
+            emission, targets, blank=0
         )
 
-    # Convert token spans back to words
+    # merge_tokens: merges consecutive identical tokens into spans (char-level)
+    token_spans = torchaudio.functional.merge_tokens(aligned_tokens[0], scores[0], blank=0)
+
+    # Group character-level spans back into per-word time intervals
     num_frames = emission.size(1)
     time_per_frame = duration / max(num_frames, 1)
 
     raw_words: list[dict[str, Any]] = []
-    # If forced aligner succeeded, map spans
-    if token_spans and len(token_spans[0]) > 0:
-        spans = token_spans[0]
-        spans_by_word = torchaudio.functional.merge_tokens(spans, bundle.get_labels())
-        for sp in spans_by_word:
+    span_idx = 0
+    for w, toks in zip(aligned_words_texts, word_token_lists):
+        n = len(toks)
+        spans_w = token_spans[span_idx: span_idx + n]
+        span_idx += n
+        if spans_w:
             raw_words.append({
-                "word": sp.token,
-                "start": sp.start * time_per_frame,
-                "end": sp.end * time_per_frame,
+                "word": w,
+                "start": spans_w[0].start * time_per_frame,
+                "end": spans_w[-1].end * time_per_frame,
             })
 
     return interpolate_unaligned_words(words, raw_words, duration)
@@ -239,6 +279,13 @@ def align_transcript(
     """Force-align audio and transcript to return exact word boundaries.
 
     Results are cached in data/labels/alignments/ by audio-content + transcript hash.
+
+    Backend semantics (Bug 3 fix — NO silent fallbacks):
+    - An explicitly selected backend that fails RAISES with the real error.
+    - "proportional" is only used when ALIGNMENT_BACKEND == "proportional" or
+      backend parameter is "proportional".
+    - "whisperx" raises ImportError immediately if whisperx is not installed.
+    - Cache is only written after a SUCCESSFUL alignment (not on fallback or error).
 
     Args:
         audio_path: Path to the target audio file.
@@ -276,29 +323,32 @@ def align_transcript(
                 for item in cached_data
             ]
         except Exception as e:
-            logger.warning("Failed to load alignment cache %s: %s", cache_path, e)
+            # Cache file is corrupt: delete it and re-align
+            logger.warning("Corrupt alignment cache %s, deleting: %s", cache_path, e)
+            cache_path.unlink(missing_ok=True)
 
     chosen_backend = backend or ALIGNMENT_BACKEND
 
-    aligned_words: list[AlignedWord] = []
+    # Validate backend value early
+    valid_backends = {"whisperx", "torchaudio", "proportional"}
+    if chosen_backend not in valid_backends:
+        raise ValueError(
+            f"Unknown ALIGNMENT_BACKEND {chosen_backend!r}. Choose from {valid_backends}."
+        )
+
+    # Dispatch — NO silent fallbacks; failures propagate
+    aligned_words: list[AlignedWord]
     if chosen_backend == "whisperx":
-        try:
-            aligned_words = _align_with_whisperx(audio_path, words, transcript, duration)
-        except Exception as exc:
-            logger.warning("WhisperX alignment failed, falling back to torchaudio: %s", exc)
-            chosen_backend = "torchaudio"
-
-    if chosen_backend == "torchaudio":
-        try:
-            aligned_words = _align_with_torchaudio(audio_path, words, duration)
-        except Exception as exc:
-            logger.warning("Torchaudio MMS_FA alignment failed, falling back to proportional: %s", exc)
-            chosen_backend = "proportional"
-
-    if chosen_backend == "proportional" or not aligned_words:
+        # Raises ImportError if not installed, RuntimeError on failure
+        aligned_words = _align_with_whisperx(audio_path, words, transcript, duration)
+    elif chosen_backend == "torchaudio":
+        # Raises RuntimeError on failure — no fallback to proportional
+        aligned_words = _align_with_torchaudio(audio_path, words, duration)
+    else:
+        # chosen_backend == "proportional"
         aligned_words = _align_proportional(words, duration)
 
-    # Write cache
+    # Write cache only on success
     if use_cache:
         try:
             cache_path.write_text(json.dumps(aligned_words, indent=2), encoding="utf-8")

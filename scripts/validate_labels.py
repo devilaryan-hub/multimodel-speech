@@ -10,11 +10,16 @@ Prints a per-flaw-type count summary and reports any anomalies.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path when run as `python scripts/validate_labels.py`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import csv
-import sys
 from collections import Counter
-from pathlib import Path
+
 
 from src.config import FLAWED_DIR, LABELS_DIR
 

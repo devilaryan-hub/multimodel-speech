@@ -106,3 +106,141 @@ def test_real_speech_alignment_skipped_if_no_data():
     aligned = align_transcript(sample_wav, transcript, backend="whisperx")
     assert len(aligned) > 0
     assert any(w["aligned"] is True for w in aligned)
+
+
+def test_torchaudio_failure_raises(monkeypatch):
+    """Bug 3: Explicitly selected backend that fails must RAISE, not silently fall back."""
+    import src.features.forced_align as fa
+
+    wav = _make_dummy_wav(1.5)
+    text = "hello world test failure"
+
+    def mock_fail(*args, **kwargs):
+        raise RuntimeError("Torchaudio MMS_FA forced alignment internal crash")
+
+    monkeypatch.setattr(fa, "_align_with_torchaudio", mock_fail)
+
+    with pytest.raises(RuntimeError, match="Torchaudio MMS_FA forced alignment internal crash"):
+        fa.align_transcript(wav, text, backend="torchaudio", use_cache=False)
+
+    # Verify no cache was written for the failed aligner
+    f_hash = fa.compute_alignment_hash(wav, text)
+    cache_file = ALIGNMENT_CACHE_DIR / f"{f_hash}.json"
+    assert not cache_file.exists()
+
+
+def test_proportional_only_when_selected():
+    """Bug 3: Proportional timing is used only when ALIGNMENT_BACKEND == 'proportional' or backend='proportional'."""
+    from src.features.transcript import tokenize
+    wav = _make_dummy_wav(1.0)
+    text = "proportional only when selected"
+
+    # Explicit backend="proportional" succeeds and marks all words aligned=False
+    res = align_transcript(wav, text, backend="proportional", use_cache=False)
+    assert len(res) == len(tokenize(text))
+    assert all(w["aligned"] is False for w in res)
+
+
+def test_no_silent_fallback_whisperx(monkeypatch):
+    """Bug 3: Selecting 'whisperx' when not installed raises ImportError, no silent fallback."""
+    import builtins
+    wav = _make_dummy_wav(1.0)
+    text = "testing whisperx import error"
+
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "whisperx":
+            raise ImportError("No module named 'whisperx'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    with pytest.raises(ImportError, match="whisperx is not installed"):
+        align_transcript(wav, text, backend="whisperx", use_cache=False)
+
+
+def test_real_speech_alignment_uses_configured_backend():
+    """Bug 4: Real speech alignment using the configured backend (torchaudio)."""
+    from src.config import ALIGNMENT_BACKEND
+    real_wavs = list(RAW_DIR.glob("*.wav"))
+    if not real_wavs:
+        pytest.skip(
+            "Unverified: No real speech files in data/raw/. "
+            "Verification will run automatically once speeches are added."
+        )
+
+    sample_wav = real_wavs[0]
+    txt_file = sample_wav.with_suffix(".txt")
+    if not txt_file.exists():
+        pytest.skip(f"No corresponding transcript file found for {sample_wav}")
+
+    transcript = txt_file.read_text(encoding="utf-8-sig")
+    aligned = align_transcript(sample_wav, transcript, backend=ALIGNMENT_BACKEND)
+    assert len(aligned) > 0
+    assert any(w["aligned"] is True for w in aligned)
+
+
+def test_real_speech_alignment_sanity_checks(monkeypatch):
+    """ALIGNMENT SANITY CHECKS:
+    For each data/raw/*.wav with a .txt:
+    - word count out of aligner equals normalized transcript word count;
+    - starts are non-decreasing;
+    - each end >= start;
+    - all times lie within audio duration;
+    - at least 80% of words have aligned=True (otherwise fail and print unaligned words);
+    - cache JSON is reused on a second call (assert no model call).
+    - Reports number of unaligned words.
+    """
+    import soundfile as sf
+    from src.features.transcript import tokenize
+    import src.features.forced_align as fa
+
+    real_wavs = list(RAW_DIR.glob("*.wav"))
+    if not real_wavs:
+        pytest.skip("No real speech files in data/raw/ to run alignment sanity checks.")
+
+    for wav_path in real_wavs:
+        txt_path = wav_path.with_suffix(".txt")
+        if not txt_path.exists():
+            continue
+
+        transcript = txt_path.read_text(encoding="utf-8-sig")
+        expected_tokens = tokenize(transcript)
+        data, sr = sf.read(str(wav_path))
+        duration = len(data) / sr
+
+        # Call 1: Run alignment
+        aligned = fa.align_transcript(wav_path, transcript, duration=duration, use_cache=True)
+
+        # 1. Word count equals normalized transcript word count
+        assert len(aligned) == len(expected_tokens), (
+            f"Word count mismatch: aligner got {len(aligned)}, expected {len(expected_tokens)}"
+        )
+
+        # 2 & 3 & 4. Timestamps sanity
+        for i, w in enumerate(aligned):
+            assert w["end"] >= w["start"], f"Word {w['word']}: end {w['end']} < start {w['start']}"
+            assert 0.0 <= w["start"] <= duration + 0.1, f"Word {w['word']}: start {w['start']} outside [0, {duration}]"
+            assert 0.0 <= w["end"] <= duration + 0.5, f"Word {w['word']}: end {w['end']} outside [0, {duration}]"
+            if i > 0:
+                assert w["start"] >= aligned[i - 1]["start"] - 1e-4, (
+                    f"Start non-decreasing violation at index {i}: {w['start']} < {aligned[i - 1]['start']}"
+                )
+
+        # 5. At least 80% aligned
+        unaligned_words = [w["word"] for w in aligned if not w["aligned"]]
+        pct_aligned = (len(aligned) - len(unaligned_words)) / max(len(aligned), 1)
+        assert pct_aligned >= 0.80, (
+            f"Only {pct_aligned:.1%} of words aligned (< 80%). Unaligned words: {unaligned_words}"
+        )
+        print(f"\n[Sanity Check] {wav_path.name}: {len(aligned)} words total, {len(unaligned_words)} unaligned ({pct_aligned:.1%} aligned).")
+
+        # 6. Cache reuse: monkeypatch model to raise if called on second invocation
+        def boom(*args, **kwargs):
+            raise AssertionError("Model should NOT be called when cache exists!")
+
+        monkeypatch.setattr(fa, "_align_with_torchaudio", boom)
+        cached_result = fa.align_transcript(wav_path, transcript, duration=duration, use_cache=True)
+        assert cached_result == aligned
+
