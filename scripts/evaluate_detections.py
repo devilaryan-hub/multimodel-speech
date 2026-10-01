@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> None:
                 Interval(
                     float(row["start_sec"]),
                     float(row["end_sec"]),
-                    row["flaw_type"],
+                    row["flaw_type"].upper(),   # normalise to UPPER_CASE
                 )
             )
 
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
                         Interval(
                             float(r["start"]),
                             float(r["end"]),
-                            r["flaw_type"],
+                            r["flaw_type"].upper(),  # normalise to UPPER_CASE
                         )
                     )
             except Exception as exc:
