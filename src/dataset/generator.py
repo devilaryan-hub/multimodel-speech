@@ -254,10 +254,10 @@ def _injector_monotone(
             result = np.pad(result, (0, len(region) - len(result)))
         return result, 0.0
 
-    except Exception:
-        # Fallback: suppress pitch by mixing with a constant-pitch tone
-        # This is a documented last-resort; the normal path uses Parselmouth.
-        return region.copy(), 0.0
+    except Exception as exc:
+        raise RuntimeError(
+            f"Parselmouth pitch-tier flattening failed for monotone injection: {exc}"
+        ) from exc
 
 
 def _injector_low_energy(
