@@ -38,13 +38,16 @@ def _sakoe_chiba_dtw(
     n, m = cost_matrix.shape
     inf = np.inf
 
+    # Ensure the band covers the length difference so the end cell (n-1, m-1) is reachable
+    band_radius = max(radius, abs(n - m) + 5)
+
     # Accumulated cost matrix (filled with inf initially)
     acc = np.full((n, m), inf, dtype=np.float64)
     acc[0, 0] = cost_matrix[0, 0]
 
     for i in range(n):
-        j_lo = max(0, i - radius)
-        j_hi = min(m - 1, i + radius)
+        j_lo = max(0, i - band_radius)
+        j_hi = min(m - 1, i + band_radius)
         for j in range(j_lo, j_hi + 1):
             candidates = []
             if i > 0 and j > 0:

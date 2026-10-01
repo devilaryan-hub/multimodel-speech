@@ -199,23 +199,34 @@ def detect_pauses(waveform: np.ndarray) -> list[tuple[float, float]]:
     return pauses
 
 
-def extract_all(path: str | Path) -> AudioFeatures:
+_AUDIO_FEATURES_CACHE: dict[str, AudioFeatures] = {}
+
+
+def extract_all(path: str | Path, use_cache: bool = True) -> AudioFeatures:
     """Full feature-extraction pipeline for a single audio file.
+
+    Caches extracted features in memory by resolved absolute path so repeated
+    evaluations against the same baseline audio file do not re-run expensive pYIN.
 
     Args:
         path: Path to the audio file.
+        use_cache: Whether to use/populate the in-memory features cache.
 
     Returns:
         AudioFeatures named tuple with waveform, pitch, energy, pauses,
         duration, sample rate, and median F0.
     """
+    resolved_path = str(Path(path).resolve())
+    if use_cache and resolved_path in _AUDIO_FEATURES_CACHE:
+        return _AUDIO_FEATURES_CACHE[resolved_path]
+
     waveform = load_audio(path)
     pitch_st, median_f0_hz = extract_pitch(waveform)
     energy_z = extract_energy(waveform)
     pauses = detect_pauses(waveform)
     duration = float(len(waveform) / SAMPLE_RATE)
 
-    return AudioFeatures(
+    features = AudioFeatures(
         waveform=waveform,
         pitch_st=pitch_st,
         energy_z=energy_z,
@@ -224,3 +235,6 @@ def extract_all(path: str | Path) -> AudioFeatures:
         sr=SAMPLE_RATE,
         median_f0_hz=median_f0_hz,
     )
+    if use_cache:
+        _AUDIO_FEATURES_CACHE[resolved_path] = features
+    return features

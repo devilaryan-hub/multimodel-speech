@@ -173,6 +173,20 @@ def _align_with_whisperx(
     return interpolate_unaligned_words(words, raw_words, duration)
 
 
+_MMS_FA_MODEL = None
+_MMS_FA_DICT = None
+
+
+def _get_mms_fa_components():
+    global _MMS_FA_MODEL, _MMS_FA_DICT
+    import torchaudio
+    if _MMS_FA_MODEL is None:
+        bundle = torchaudio.pipelines.MMS_FA
+        _MMS_FA_MODEL = bundle.get_model()
+        _MMS_FA_DICT = bundle.get_dict()
+    return _MMS_FA_MODEL, _MMS_FA_DICT, torchaudio.pipelines.MMS_FA.sample_rate
+
+
 def _align_with_torchaudio(
     audio_path: str | Path,
     words: list[str],
@@ -193,16 +207,14 @@ def _align_with_torchaudio(
     import torch
     import torchaudio
 
-    bundle = torchaudio.pipelines.MMS_FA
-    model = bundle.get_model()
-    dictionary = bundle.get_dict()
+    model, dictionary, target_sr = _get_mms_fa_components()
 
     waveform, sr = torchaudio.load(str(audio_path))
     # Convert stereo → mono
     if waveform.ndim > 1 and waveform.size(0) > 1:
         waveform = torch.mean(waveform, dim=0, keepdim=True)
-    if sr != bundle.sample_rate:
-        waveform = torchaudio.functional.resample(waveform, sr, bundle.sample_rate)
+    if sr != target_sr:
+        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
 
     # Build word→token mapping, preserving only words with at least 1 known char
     BLANK_CHAR = "-"
