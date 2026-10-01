@@ -1,0 +1,171 @@
+"""
+src/config.py
+=============
+Central configuration for the Speech Evaluation System.
+All constants live here; no other module may hardcode values.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+SEED: int = 42
+
+# ---------------------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------------------
+SAMPLE_RATE: int = 16_000          # Hz, mono
+CHANNELS: int = 1
+
+# STFT / feature-frame parameters
+FRAME_LENGTH: int = 2_048          # samples  (~128 ms at 16 kHz)
+HOP_LENGTH: int = 512              # samples  (~32 ms at 16 kHz)
+N_FFT: int = 2_048
+
+# pYIN pitch-tracking parameters
+FMIN_HZ: float = 60.0              # Hz  – lowest expected F0
+FMAX_HZ: float = 600.0             # Hz  – highest expected F0
+PITCH_FILL_NA: float = float("nan")  # semitones used when frame is unvoiced
+
+# ---------------------------------------------------------------------------
+# Pause detection
+# ---------------------------------------------------------------------------
+PAUSE_ENERGY_THRESHOLD: float = -40.0   # dBFS below which a frame is silence
+PAUSE_MIN_DURATION: float = 0.25         # seconds; shorter gaps are not pauses
+PAUSE_IDEAL_MAX: float = 0.6             # seconds; pauses longer than this penalised
+
+# ---------------------------------------------------------------------------
+# Scoring / thresholds
+# ---------------------------------------------------------------------------
+PACE_IDEAL_WPM_MIN: float = 120.0
+PACE_IDEAL_WPM_MAX: float = 160.0
+PITCH_VAR_IDEAL_MIN: float = 2.0        # semitones std-dev
+PITCH_VAR_IDEAL_MAX: float = 8.0
+ENERGY_Z_CLIP: float = 3.0              # clip energy z-scores beyond ±3σ
+SEVERITY_SCALE_FACTOR: float = 1.0      # multiplier before sigmoid/clip
+
+# ---------------------------------------------------------------------------
+# Spectral, Clarity & Filler parameters
+# ---------------------------------------------------------------------------
+N_MFCC: int = 13                        # number of MFCC coefficients
+CLARITY_LOW_PERCENTILE: float = 10.0    # noise floor percentile
+CLARITY_HIGH_PERCENTILE: float = 95.0   # speech peak percentile
+CLARITY_IDEAL_SNR_DB: float = 20.0      # target SNR in dB
+FILLER_MIN_DURATION: float = 0.20       # minimum duration for filler gap (seconds)
+FILLER_PITCH_STD_MAX: float = 1.2       # semitones std-dev ceiling for flat filler sound
+FILLER_ENERGY_Z_MAX: float = 0.5        # energy z-score ceiling for filler sound
+
+
+# ---------------------------------------------------------------------------
+# Paths  (relative to project root, resolved at import time)
+# ---------------------------------------------------------------------------
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+DATA_DIR: Path = PROJECT_ROOT / "data"
+RAW_DIR: Path = DATA_DIR / "raw"
+FLAWED_DIR: Path = DATA_DIR / "flawed"
+LABELS_DIR: Path = DATA_DIR / "labels"
+ALIGNMENT_CACHE_DIR: Path = LABELS_DIR / "alignments"
+OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"
+
+
+# ---------------------------------------------------------------------------
+# Forced Alignment Backend ("whisperx" | "torchaudio" | "proportional")
+# ---------------------------------------------------------------------------
+ALIGNMENT_BACKEND: str = "whisperx"
+
+# ---------------------------------------------------------------------------
+# DTW alignment
+# ---------------------------------------------------------------------------
+DTW_RADIUS: int = 30               # Sakoe-Chiba band (frames)
+
+
+# ---------------------------------------------------------------------------
+# M4 Dataset Generation — Flaw Injection Parameters
+# ---------------------------------------------------------------------------
+# Region selection: number of words per injected region
+INJECT_REGION_MIN_WORDS: int = 3
+INJECT_REGION_MAX_WORDS: int = 6
+
+# Fade duration (seconds) applied at region edges to avoid clicks
+INJECT_FADE_S: float = 0.010  # 10 ms
+
+# Number of combined-flaw files to generate
+INJECT_COMBINED_COUNT: int = 10
+
+# Severity level → stretch/compression ratio for PACE flaws
+# Keys are severity levels 1–5; values are time-stretch rates (>1 = slower, <1 = faster)
+INJECT_SLOW_RATES: dict[int, float] = {1: 1.15, 2: 1.30, 3: 1.50, 4: 1.75, 5: 2.00}
+INJECT_FAST_RATES: dict[int, float] = {1: 0.88, 2: 0.78, 3: 0.67, 4: 0.57, 5: 0.50}
+
+# Severity level → silence duration (seconds) inserted for PAUSE_EXCESSIVE
+INJECT_PAUSE_DURATIONS: dict[int, float] = {
+    1: 0.8, 2: 1.2, 3: 1.8, 4: 2.5, 5: 3.5
+}
+
+# Severity level → dB reduction for ENERGY_LOW
+INJECT_ENERGY_DB_DROP: dict[int, float] = {
+    1: 6.0, 2: 10.0, 3: 15.0, 4: 20.0, 5: 30.0
+}
+
+# Severity level → target SNR (dB) for adding Gaussian noise (UNCLEAR)
+INJECT_NOISE_SNR: dict[int, float] = {
+    1: 25.0, 2: 20.0, 3: 15.0, 4: 10.0, 5: 5.0
+}
+
+# Severity level → pitch flattening amount (fraction of pitch variation removed, 0–1)
+# 1.0 = fully flattened to median; 0.0 = unchanged
+INJECT_MONOTONE_FLATTEN: dict[int, float] = {
+    1: 0.40, 2: 0.60, 3: 0.75, 4: 0.88, 5: 1.00
+}
+
+# Synthetic filler signal: duration in seconds per severity level
+INJECT_FILLER_DURATIONS: dict[int, float] = {
+    1: 0.20, 2: 0.35, 3: 0.50, 4: 0.70, 5: 1.00
+}
+
+# Synthetic filler signal parameters (low buzz at ~150 Hz)
+INJECT_FILLER_FREQ_HZ: float = 150.0
+INJECT_FILLER_AMPLITUDE: float = 0.05   # relative to full scale
+
+
+# ---------------------------------------------------------------------------
+# M5 Word Matching and Contrastive Detection Thresholds
+# ---------------------------------------------------------------------------
+# Duration ratio thresholds relative to baseline word duration
+# ratio = candidate_duration / baseline_duration
+MATCH_SLOW_RATIO_MIN: float = 1.30    # candidate > 1.30× baseline → too slow
+MATCH_FAST_RATIO_MAX: float = 0.75    # candidate < 0.75× baseline → too fast
+
+# Pause-before delta (candidate_pause - baseline_pause) in seconds
+MATCH_PAUSE_EXCESS_DELTA: float = 0.40   # pause > baseline + 0.40 s → excessive
+MATCH_PAUSE_MISSING_DELTA: float = -0.25  # pause < baseline - 0.25 s (and baseline > 0.3 s)
+MATCH_PAUSE_BASELINE_MIN: float = 0.30   # baseline pause must exceed this for PAUSE_MISSING
+
+# Energy delta threshold (candidate energy z - baseline energy z)
+MATCH_ENERGY_LOW_DELTA: float = -1.2     # candidate energy z < baseline - 1.2 → low
+
+# Minimum number of adjacent flagged words to emit a FlawRegion
+MATCH_MIN_REGION_WORDS: int = 1
+
+# Minimum difflib SequenceMatcher ratio to accept a word match
+MATCH_SIMILARITY_THRESHOLD: float = 0.6
+
+
+# ---------------------------------------------------------------------------
+# M7 Rubric Scoring — Exponential Decay Parameters
+# Formula: score = exp(-k * mean_deviation), normalized to [0, 1]
+# (Display score = 100 * normalized_score)
+# ---------------------------------------------------------------------------
+SCORE_K_PACE: float = 1.5
+SCORE_K_PITCH: float = 0.8
+SCORE_K_ENERGY: float = 1.0
+SCORE_K_PAUSE: float = 1.2
+
+RUBRIC_WEIGHTS: dict[str, float] = {
+    "pace": 1.0,
+    "pitch_variation": 1.0,
+    "energy_consistency": 1.0,
+    "pause_pattern": 1.0,
+}
