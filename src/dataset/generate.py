@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> None:
                         "end_sec": round(end_s, 3),
                     }
                 )
-                print(f"  OK  {out_name}  [{start_s:.2f}–{end_s:.2f}s]")
+                print(f"  OK  {out_name}  [{start_s:.2f}-{end_s:.2f}s]")
             except Exception as exc:
                 print(f"  ERR {out_name}: {exc}", file=sys.stderr)
 
@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\nWrote {len(rows)} label rows → {INJECTIONS_CSV}")
+    print(f"\nWrote {len(rows)} label rows -> {INJECTIONS_CSV}")
 
 
 if __name__ == "__main__":

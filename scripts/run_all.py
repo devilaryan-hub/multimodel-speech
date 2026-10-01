@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
         txt_path = base_wav.with_suffix(".txt")
         if not txt_path.exists():
             continue
-        transcript = txt_path.read_text(encoding="utf-8").strip()
+        transcript = txt_path.read_text(encoding="utf-8-sig").strip()
 
         print(f"  Evaluating {fwav.name} vs baseline {base_wav.name}...")
         try:
