@@ -41,26 +41,38 @@ def _sakoe_chiba_dtw(
     # Ensure the band covers the length difference so the end cell (n-1, m-1) is reachable
     band_radius = max(radius, abs(n - m) + 5)
 
-    # Accumulated cost matrix (filled with inf initially)
+    # Vectorized Sakoe-Chiba DTW: process every row in one NumPy ufunc call
+    # instead of an inner Python for-loop (reduces ~N*2*radius Python ops → N NumPy calls).
     acc = np.full((n, m), inf, dtype=np.float64)
     acc[0, 0] = cost_matrix[0, 0]
 
-    for i in range(n):
+    for i in range(1, n):
         j_lo = max(0, i - band_radius)
         j_hi = min(m - 1, i + band_radius)
-        for j in range(j_lo, j_hi + 1):
-            candidates = []
-            if i > 0 and j > 0:
-                candidates.append(acc[i - 1, j - 1])
-            if i > 0:
-                candidates.append(acc[i - 1, j])
-            if j > 0:
-                candidates.append(acc[i, j - 1])
-            if not candidates:
-                prev_cost = 0.0
-            else:
-                prev_cost = min(candidates)
-            acc[i, j] = cost_matrix[i, j] + prev_cost
+        js = np.arange(j_lo, j_hi + 1)
+
+        # Predecessor: diagonal (i-1, j-1)
+        prev_diag = acc[i - 1, np.clip(js - 1, 0, m - 1)].copy()
+        prev_diag[js == 0] = inf
+
+        # Predecessor: up (i-1, j)
+        prev_up = acc[i - 1, js]
+
+        # Predecessor: left (i, j-1) — requires a short left-to-right sweep since
+        # acc[i, j-1] may have just been written in this same row.
+        prev_left = np.full(len(js), inf, dtype=np.float64)
+        if j_lo > 0:
+            prev_left[0] = acc[i, j_lo - 1]
+        best_predecessor = np.minimum(np.minimum(prev_diag, prev_up), prev_left)
+        row_cost = cost_matrix[i, j_lo: j_hi + 1] + best_predecessor
+
+        # Push left-propagation: subsequent cells can use acc[i, j-1] from this row
+        # We need a forward-pass for the left-dependency (cumulative min-update).
+        for k in range(1, len(js)):
+            left_candidate = row_cost[k - 1]
+            row_cost[k] = min(row_cost[k], cost_matrix[i, js[k]] + left_candidate)
+
+        acc[i, j_lo: j_hi + 1] = row_cost
 
     # Backtrack
     ref_path: list[int] = []
