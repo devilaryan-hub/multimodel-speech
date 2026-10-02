@@ -225,16 +225,22 @@ def compare_words(
         # Duration ratio
         c_dur = cw.end - cw.start
         if bw is not None:
-            b_dur = max(bw.end - bw.start, 1e-6)
-            dur_ratio = c_dur / b_dur
+            if cw.start == bw.start and cw.end == bw.end:
+                dur_ratio = 1.0
+            else:
+                b_dur = max(bw.end - bw.start, 1e-6)
+                dur_ratio = c_dur / b_dur
         else:
             dur_ratio = float("nan")
 
         # Pause delta (candidate pause_before - baseline pause_before)
         c_pause = _pause_before(c_idx, c_words)
         if bw is not None:
-            b_pause = _pause_before(b_idx, b_words)
-            pause_delta = c_pause - b_pause
+            if c_idx == b_idx and cw.start == bw.start and (c_idx == 0 or c_words[c_idx - 1].end == b_words[b_idx - 1].end):
+                pause_delta = 0.0
+            else:
+                b_pause = _pause_before(b_idx, b_words)
+                pause_delta = c_pause - b_pause
         else:
             pause_delta = float("nan")
 
@@ -242,7 +248,10 @@ def compare_words(
         c_energy = _word_energy_mean(cw, candidate_energy)
         if bw is not None:
             b_energy = _word_energy_mean(bw, baseline_energy)
-            energy_delta = c_energy - b_energy
+            if cw.start == bw.start and cw.end == bw.end and np.isclose(c_energy, b_energy, atol=1e-5):
+                energy_delta = 0.0
+            else:
+                energy_delta = c_energy - b_energy
         else:
             energy_delta = float("nan")
 
@@ -252,6 +261,8 @@ def compare_words(
             b_pitch_range = _word_pitch_range(bw, baseline_pitch)
             if math.isnan(c_pitch_range) or math.isnan(b_pitch_range) or b_pitch_range < 1e-6:
                 pitch_ratio = float("nan")
+            elif cw.start == bw.start and cw.end == bw.end and np.isclose(c_pitch_range, b_pitch_range, atol=1e-5):
+                pitch_ratio = 1.0
             else:
                 pitch_ratio = c_pitch_range / b_pitch_range
         else:

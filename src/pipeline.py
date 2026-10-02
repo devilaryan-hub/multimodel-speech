@@ -85,25 +85,25 @@ def _build_summary(
 
 def evaluate(
     candidate_path: str | Path,
-    baseline_path: str | Path,
-    transcript: str,
-    audio_id: str,
+    baseline_path: str | Path | None = None,
+    transcript: str = "",
+    audio_id: str = "",
 ) -> EvaluationResult:
     """Run the full speech evaluation pipeline.
 
     Steps:
     1. Seed random state for reproducibility.
-    2. Extract audio features from candidate and baseline.
+    2. Extract audio features from candidate and baseline (if provided).
     3. DTW-align candidate feature streams to baseline.
     4. Estimate word timings from transcript + candidate duration.
     5. Score each rubric dimension.
-    6. Detect time-stamped flaw regions.
+    6. Detect time-stamped flaw regions (contrastive if baseline given, else standalone).
     7. Build summary and assemble EvaluationResult.
 
     Args:
         candidate_path: Path to the candidate speaker's audio file.
-        baseline_path:  Path to the baseline (ideal) audio file.
-        transcript:     The spoken text (same for both speakers).
+        baseline_path:  Path to the baseline (ideal) audio file, or None.
+        transcript:     The spoken text (or path to transcript file).
         audio_id:       Unique identifier string for this evaluation.
 
     Returns:
@@ -111,17 +111,29 @@ def evaluate(
     """
     _seed_all()
 
+    # Support passing a file path to the transcript
+    try:
+        tr_path = Path(transcript)
+        if tr_path.is_file():
+            transcript = tr_path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, ValueError):
+        pass
+
     # ── 1. Feature extraction ─────────────────────────────────────────────
     cand: AudioFeatures = extract_all(candidate_path)
-    base: AudioFeatures = extract_all(baseline_path)
+    has_baseline = baseline_path is not None and str(baseline_path).strip() != ""
 
     # ── 2. Align candidate to baseline frame grid ─────────────────────────
-    _b_pitch, _b_energy, w_pitch, w_energy = align_features(
-        baseline_pitch=base.pitch_st,
-        baseline_energy=base.energy_z,
-        candidate_pitch=cand.pitch_st,
-        candidate_energy=cand.energy_z,
-    )
+    if has_baseline:
+        base: AudioFeatures = extract_all(baseline_path)
+        _b_pitch, _b_energy, w_pitch, w_energy = align_features(
+            baseline_pitch=base.pitch_st,
+            baseline_energy=base.energy_z,
+            candidate_pitch=cand.pitch_st,
+            candidate_energy=cand.energy_z,
+        )
+    else:
+        w_pitch, w_energy = cand.pitch_st, cand.energy_z
 
     # ── 3. Forced Alignment → word timings → pace ────────────────────────
     aligned_res = align_transcript(candidate_path, transcript, duration=cand.duration)
@@ -129,10 +141,10 @@ def evaluate(
     tokens = [w.text for w in words]
     wpm = words_to_pace_wpm(words)
 
-    # Baseline word timings for contrastive detection
-    base_aligned = align_transcript(baseline_path, transcript, duration=base.duration)
-    base_words = [Word(text=aw["word"], start=aw["start"], end=aw["end"]) for aw in base_aligned]
-
+    if has_baseline:
+        # Baseline word timings for contrastive detection
+        base_aligned = align_transcript(baseline_path, transcript, duration=base.duration)
+        base_words = [Word(text=aw["word"], start=aw["start"], end=aw["end"]) for aw in base_aligned]
 
     # ── 4. Rubric scoring ─────────────────────────────────────────────────
     rubric: list[RubricScore] = [
@@ -144,28 +156,31 @@ def evaluate(
     composite = compute_composite(rubric)
 
     # ── 5. Flaw detection ─────────────────────────────────────────────────
-    # 5a. Single-signal detectors (pitch, energy, pause, filler)
-    flaw_regions = detect_all(
-        pitch_st=w_pitch,
-        energy_z=w_energy,
-        pauses=cand.pauses,
-        words=words,
-        duration=cand.duration,
-    )
-    # 5b. Contrastive word-matching detectors (pace, pause delta, energy delta)
-    matched = match_words(base_words, words)
-    comparisons = compare_words(
-        matched,
-        baseline_pitch=base.pitch_st,
-        candidate_pitch=cand.pitch_st,
-        baseline_energy=base.energy_z,
-        candidate_energy=cand.energy_z,
-    )
-    match_flaws = detect_from_matches(comparisons)
-    # Merge and deduplicate by type+time (keep contrastive results which are more precise)
-    flaw_regions = sorted(
-        flaw_regions + match_flaws, key=lambda r: r.start
-    )
+    if has_baseline:
+        # When a baseline is provided, only baseline-relative (match-based)
+        # detection may emit regions. Standalone absolute-threshold detectors run
+        # only when no baseline is given, because an ideal reference speech can
+        # itself contain natural stylistic variations (e.g., steady pitch on a clause,
+        # natural rhetorical pauses) that absolute heuristic thresholds would falsely flag.
+        matched = match_words(base_words, words)
+        comparisons = compare_words(
+            matched,
+            baseline_pitch=base.pitch_st,
+            candidate_pitch=cand.pitch_st,
+            baseline_energy=base.energy_z,
+            candidate_energy=cand.energy_z,
+        )
+        flaw_regions = detect_from_matches(comparisons)
+    else:
+        # Standalone mode: when no reference baseline is given, evaluate against
+        # absolute heuristic thresholds across single-signal feature dimensions.
+        flaw_regions = detect_all(
+            pitch_st=w_pitch,
+            energy_z=w_energy,
+            pauses=cand.pauses,
+            words=words,
+            duration=cand.duration,
+        )
 
     # ── 6. Summary ────────────────────────────────────────────────────────
     summary = _build_summary(composite, rubric, flaw_regions)

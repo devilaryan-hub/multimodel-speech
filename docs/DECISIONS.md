@@ -83,4 +83,13 @@ This document records architectural, mathematical, and algorithmic design choice
 - **Choice**: Standardized all `FlawType` enum values in `src/schema.py` to uppercase strings (e.g. `FlawType.PACE_TOO_FAST = "PACE_TOO_FAST"`), matching ground-truth labels in `data/labels/injections.csv`. Evaluators and tests reference enum members directly rather than hardcoded string literals.
 - **Rationale**: A case mismatch between uppercase ground-truth injection labels and lowercase detector outputs caused 0 true positives during initial batch evaluation. Enforcing uppercase across all schema definitions, serialization layers, and evaluation scripts guarantees end-to-end consistency without fragile runtime `.upper()` or `.lower()` conversions.
 
+---
+
+## M9: Contrastive vs Standalone Flaw Detection Gating
+
+### Decision: Baseline-Gated Contrastive Detection
+- **Choice**: When a reference baseline recording is provided to `evaluate()`, only contrastive match-based detectors emit flaw regions; standalone absolute-threshold detectors run only in baseline-free mode.
+- **Rationale**: An ideal reference speech naturally contains expressive stylistic features (e.g., steady pitch on a clause, deliberate rhetorical pauses) that absolute heuristic thresholds falsely flag as flaws. In contrastive evaluation, flaws represent meaningful deviations from the exemplar speaker rather than deviations from arbitrary static bounds. Comparing an ideal recording with itself now deterministically yields zero flaw regions.
+
+
 
