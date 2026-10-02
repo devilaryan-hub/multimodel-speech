@@ -220,7 +220,11 @@ def evaluate(
         # only when no baseline is given, because an ideal reference speech can
         # itself contain natural stylistic variations (e.g., steady pitch on a clause,
         # natural rhetorical pauses) that absolute heuristic thresholds would falsely flag.
-        flaw_regions = detect_from_matches(comparisons)
+        flaw_regions = detect_from_matches(
+            comparisons,
+            cand_pauses=cand.pauses,
+            base_pauses=base.pauses,
+        )
     else:
         # Standalone mode: when no reference baseline is given, evaluate against
         # absolute heuristic thresholds across single-signal feature dimensions.

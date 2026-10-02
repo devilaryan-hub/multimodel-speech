@@ -31,6 +31,7 @@ import numpy as np
 
 from src.config import (
     HOP_LENGTH,
+    MATCH_ABSORBED_PAUSE_EXCESS,
     MATCH_ENERGY_LOW_DELTA,
     MATCH_FAST_RATIO_MAX,
     MATCH_MIN_REGION_WORDS,
@@ -355,10 +356,88 @@ def _merge_runs(
 # Public: detect flaws from word comparisons
 # ---------------------------------------------------------------------------
 
+def _detect_absorbed_pauses(
+    cand_pauses: list[tuple[float, float]],
+    base_pauses: list[tuple[float, float]],
+) -> list[FlawRegion]:
+    """Detect pauses that forced alignment absorbed into word spans.
+
+    When a long silence is inserted between words, the forced aligner stretches
+    adjacent word boundaries to cover it.  The gap between words (pause_delta_s)
+    then reads near-zero, hiding the flaw.  This function cross-references the
+    raw candidate pause list (from dBFS energy) against the baseline pause list.
+
+    Algorithm:
+      For each candidate pause, find the nearest baseline pause by matching on
+      fractional position (index / total count) so that the comparison is
+      stable even after the time-shift caused by the insertion.  If no baseline
+      pause maps within the same relative slot, the baseline duration is 0.
+      Emit PAUSE_EXCESSIVE anchored at the candidate pause's own timestamps when
+          candidate_pause_duration - matched_baseline_duration > MATCH_ABSORBED_PAUSE_EXCESS
+
+    Ideal-vs-ideal safety: Every candidate pause maps to its own baseline
+    counterpart with zero extra duration, so the threshold is never crossed.
+
+    Args:
+        cand_pauses: list of (start_s, end_s) silence intervals for the candidate.
+        base_pauses: list of (start_s, end_s) silence intervals for the baseline.
+
+    Returns:
+        List of FlawRegion (PAUSE_EXCESSIVE), sorted by start time.
+    """
+    from src.analysis.detector import _severity
+    from src.explain.templates import explain
+
+    flaws: list[FlawRegion] = []
+    n_cand = len(cand_pauses)
+    n_base = len(base_pauses)
+
+    for c_i, cp in enumerate(cand_pauses):
+        c_dur = cp[1] - cp[0]
+        # Map candidate index to closest baseline index by fractional position
+        if n_base > 0:
+            frac = c_i / max(n_cand - 1, 1)
+            b_i = round(frac * (n_base - 1))
+            b_i = max(0, min(b_i, n_base - 1))
+            b_dur = base_pauses[b_i][1] - base_pauses[b_i][0]
+        else:
+            b_dur = 0.0
+
+        extra = c_dur - b_dur
+        if extra > MATCH_ABSORBED_PAUSE_EXCESS:
+            sev = _severity(extra - MATCH_ABSORBED_PAUSE_EXCESS, scale=2.0)
+            meta = {
+                "pause_duration_s": round(c_dur, 3),
+                "baseline_pause_duration_s": round(b_dur, 3),
+                "extra_pause_s": round(extra, 3),
+            }
+            flaws.append(
+                FlawRegion(
+                    start=round(cp[0], 3),
+                    end=round(cp[1], 3),
+                    flaw_type=FlawType.PAUSE_EXCESSIVE,
+                    severity=round(sev, 4),
+                    explanation=explain(FlawType.PAUSE_EXCESSIVE, sev, meta),
+                    metadata=meta,
+                )
+            )
+
+    return sorted(flaws, key=lambda r: r.start)
+
+
 def detect_from_matches(
     comparisons: list[WordComparison],
+    cand_pauses: list[tuple[float, float]] | None = None,
+    base_pauses: list[tuple[float, float]] | None = None,
 ) -> list[FlawRegion]:
     """Detect pace, pause, and energy flaws from word-level comparisons.
+
+    Args:
+        comparisons:  Per-word diagnostic scalars from compare_words().
+        cand_pauses:  Raw candidate pause list (start_s, end_s) from AudioFeatures.
+                      When provided together with base_pauses, absorbed-pause
+                      detection runs to catch silences the aligner hid inside word spans.
+        base_pauses:  Raw baseline pause list.  Must be provided with cand_pauses.
 
     Returns:
         Time-sorted list of FlawRegion.
@@ -465,5 +544,21 @@ def detect_from_matches(
         )
     )
 
+    # --- PAUSE_EXCESSIVE (absorbed into word spans) ---
+    # When the forced aligner stretches a word's timestamps to cover a long
+    # inserted silence, pause_delta_s reads near-zero (no inter-word gap).
+    # Cross-referencing the raw dBFS-detected pause lists catches these cases.
+    if cand_pauses is not None and base_pauses is not None:
+        absorbed = _detect_absorbed_pauses(cand_pauses, base_pauses)
+        # Avoid double-counting: only add absorbed pauses whose time ranges are
+        # not already covered by a word-boundary PAUSE_EXCESSIVE region.
+        existing_ranges = [
+            (f.start, f.end) for f in flaws if f.flaw_type == FlawType.PAUSE_EXCESSIVE
+        ]
+        for ap in absorbed:
+            if not any(ap.start < e and ap.end > s for s, e in existing_ranges):
+                flaws.append(ap)
+
     flaws.sort(key=lambda r: r.start)
     return flaws
+

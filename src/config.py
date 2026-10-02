@@ -149,6 +149,12 @@ MATCH_PAUSE_EXCESS_DELTA: float = 0.40   # pause > baseline + 0.40 s → excessi
 MATCH_PAUSE_MISSING_DELTA: float = -0.25  # pause < baseline - 0.25 s (and baseline > 0.3 s)
 MATCH_PAUSE_BASELINE_MIN: float = 0.30   # baseline pause must exceed this for PAUSE_MISSING
 
+# Minimum extra duration for an absorbed (intra-word) pause to count as PAUSE_EXCESSIVE.
+# Candidate pause must exceed its nearest baseline counterpart by this many seconds.
+# Set above natural single-breath pause variation (~0.5 s) to avoid firing on ideal reads.
+MATCH_ABSORBED_PAUSE_EXCESS: float = 0.80
+
+
 # Energy delta threshold (candidate energy z - baseline energy z)
 MATCH_ENERGY_LOW_DELTA: float = -1.2     # candidate energy z < baseline - 1.2 → low
 
