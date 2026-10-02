@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> None:
             continue
         transcript = txt_path.read_text(encoding="utf-8-sig").strip()
 
-        print(f"  Evaluating {fwav.name} vs baseline {base_wav.name}...")
+        print(f"  Evaluating {fwav.name} vs baseline {base_wav.name}...", flush=True)
         try:
             result = evaluate(
                 candidate_path=fwav,
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             out_file = OUTPUTS_DIR / f"{fwav.stem}_eval.json"
             out_file.write_text(result.model_dump_json(indent=2), encoding="utf-8")
-            print(f"    OK -> {out_file.name} (score: {result.composite_score:.2f})")
+            print(f"    OK -> {out_file.name} (score: {result.composite_score:.2f})", flush=True)
         except Exception as exc:
             print(f"    ERR -> {exc}", file=sys.stderr)
 
