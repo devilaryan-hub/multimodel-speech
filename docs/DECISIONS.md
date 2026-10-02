@@ -74,3 +74,13 @@ This document records architectural, mathematical, and algorithmic design choice
 ### Decision: Exponential Decay Scoring vs. Hard Linear Cutoffs
 - **Choice**: Implemented `exponential_score(deviation, k) = exp(-k * deviation)` with decay rates `k` configured per rubric dimension in `src/config.py`. Values are normalized to [0, 1] to satisfy `schema.py` invariants (with 100× display multiplier).
 - **Rationale**: Linear penalty functions create artificial "cliffs" where a 1 WPM deviation change suddenly zeros out a contestant's score. Exponential decay reflects human perceptual tolerance: small deviations incur negligible penalties, while severe deviations produce smooth asymptotic degradation without hard zero-clamping. Configuring dimension weights in `RUBRIC_WEIGHTS` allows fine-tuning overall composite score sensitivity without changing business logic.
+
+---
+
+## M8: FlawType Enum and Label Casing Consistency
+
+### Decision: Universal UPPER_CASE for FlawType Values
+- **Choice**: Standardized all `FlawType` enum values in `src/schema.py` to uppercase strings (e.g. `FlawType.PACE_TOO_FAST = "PACE_TOO_FAST"`), matching ground-truth labels in `data/labels/injections.csv`. Evaluators and tests reference enum members directly rather than hardcoded string literals.
+- **Rationale**: A case mismatch between uppercase ground-truth injection labels and lowercase detector outputs caused 0 true positives during initial batch evaluation. Enforcing uppercase across all schema definitions, serialization layers, and evaluation scripts guarantees end-to-end consistency without fragile runtime `.upper()` or `.lower()` conversions.
+
+
