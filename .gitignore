@@ -18,15 +18,9 @@ htmlcov/
 
 # Output and temp files
 outputs/*.json
+outputs/*.zip
 !outputs/.gitkeep
-data/raw/*.wav
-data/raw/*.txt
-!data/raw/.gitkeep
-data/flawed/*.wav
-!data/flawed/.gitkeep
-data/labels/injections.csv
-data/labels/alignments/*.json
-!data/labels/alignments/.gitkeep
+
 
 # IDE / OS
 .vscode/
