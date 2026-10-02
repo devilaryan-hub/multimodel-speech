@@ -20,6 +20,9 @@ from src.config import (
     FILLER_MIN_DURATION,
     FILLER_PITCH_STD_MAX,
     HOP_LENGTH,
+    FLAW_MERGE_GAP_SEC,
+    MIN_FLAW_DURATION_SEC,
+    MONOTONE_MIN_REGION_SEC,
     PACE_IDEAL_WPM_MAX,
     PACE_IDEAL_WPM_MIN,
     PAUSE_IDEAL_MAX,
@@ -29,6 +32,35 @@ from src.config import (
 )
 from src.features.transcript import Word
 from src.schema import FlawRegion, FlawType
+
+
+def merge_and_filter_regions(
+    regions: list[FlawRegion],
+    *,
+    merge_gap: float = FLAW_MERGE_GAP_SEC,
+    min_duration: float = MIN_FLAW_DURATION_SEC,
+) -> list[FlawRegion]:
+    """Merge nearby same-type regions and discard imperceptibly short spans."""
+    merged: list[FlawRegion] = []
+    for region in sorted(regions, key=lambda r: (r.flaw_type.value, r.start)):
+        if (
+            merged
+            and merged[-1].flaw_type == region.flaw_type
+            and region.start - merged[-1].end <= merge_gap
+        ):
+            previous = merged[-1]
+            # Preserve the explanation/metadata of the more severe detection.
+            source = region if region.severity > previous.severity else previous
+            merged[-1] = source.model_copy(
+                update={
+                    "start": min(previous.start, region.start),
+                    "end": max(previous.end, region.end),
+                    "severity": max(previous.severity, region.severity),
+                }
+            )
+        else:
+            merged.append(region)
+    return [r for r in merged if r.end - r.start >= min_duration]
 
 
 def _severity(deviation: float, scale: float = 1.0) -> float:
@@ -97,7 +129,7 @@ def detect_pace_flaws(words: list[Word]) -> list[FlawRegion]:
                 metadata={"wpm": round(wpm, 1)},
             )
         )
-    return flaws
+    return merge_and_filter_regions(flaws)
 
 
 def detect_pitch_flaws(
@@ -119,38 +151,44 @@ def detect_pitch_flaws(
 
     flaws: list[FlawRegion] = []
 
-    for i in range(0, max(1, len(pitch_st) - window_frames + 1), step_frames):
-        window = pitch_st[i : i + window_frames]
-        voiced = window[np.isfinite(window)]
-        if voiced.size < 5:
+    # Split on unvoiced frames.  NaNs are neither zero-pitch nor low-variance
+    # samples, so a monotone run can contain voiced frames only.
+    voiced_indices = np.flatnonzero(np.isfinite(pitch_st))
+    if voiced_indices.size == 0:
+        return flaws
+    voiced_runs = np.split(voiced_indices, np.where(np.diff(voiced_indices) > 1)[0] + 1)
+
+    for run_indices in voiced_runs:
+        if run_indices.size < 5:
             continue
-        std = float(np.std(voiced))
+        run_window = min(window_frames, run_indices.size)
+        for offset in range(0, run_indices.size - run_window + 1, step_frames):
+            frame_indices = run_indices[offset : offset + run_window]
+            voiced = pitch_st[frame_indices]
+            std = float(np.std(voiced))
+            start_s = _frames_to_seconds(int(frame_indices[0]))
+            end_s = _frames_to_seconds(int(frame_indices[-1]) + 1)
 
-        start_s = _frames_to_seconds(i)
-        end_s = _frames_to_seconds(i + len(window))
-
-        if std < PITCH_VAR_IDEAL_MIN:
-            deviation = (PITCH_VAR_IDEAL_MIN - std) / max(PITCH_VAR_IDEAL_MIN, 1e-6)
-            sev = _severity(deviation, scale=2.5)
-            flaw_type = FlawType.PITCH_MONOTONE
-        elif std > PITCH_VAR_IDEAL_MAX:
-            deviation = (std - PITCH_VAR_IDEAL_MAX) / max(PITCH_VAR_IDEAL_MAX, 1e-6)
-            sev = _severity(deviation, scale=1.5)
-            flaw_type = FlawType.PITCH_ERRATIC
-        else:
-            continue
-
-        flaws.append(
-            FlawRegion(
-                start=round(start_s, 3),
-                end=round(end_s, 3),
-                flaw_type=flaw_type,
+            if std < PITCH_VAR_IDEAL_MIN:
+                deviation = (PITCH_VAR_IDEAL_MIN - std) / max(PITCH_VAR_IDEAL_MIN, 1e-6)
+                sev = _severity(deviation, scale=2.5)
+                flaw_type = FlawType.PITCH_MONOTONE
+            elif std > PITCH_VAR_IDEAL_MAX:
+                deviation = (std - PITCH_VAR_IDEAL_MAX) / max(PITCH_VAR_IDEAL_MAX, 1e-6)
+                sev = _severity(deviation, scale=1.5)
+                flaw_type = FlawType.PITCH_ERRATIC
+            else:
+                continue
+            flaws.append(FlawRegion(
+                start=round(start_s, 3), end=round(end_s, 3), flaw_type=flaw_type,
                 severity=round(sev, 4),
                 explanation=explain(flaw_type, sev, {"pitch_std_st": std}),
                 metadata={"pitch_std_st": round(std, 3)},
-            )
-        )
-    return flaws
+            ))
+    return merge_and_filter_regions(
+        flaws,
+        min_duration=MONOTONE_MIN_REGION_SEC,
+    )
 
 
 def detect_energy_flaws(
@@ -209,7 +247,7 @@ def detect_energy_flaws(
                     metadata={"energy_std_z": round(std_e, 3)},
                 )
             )
-    return flaws
+    return merge_and_filter_regions(flaws)
 
 
 def detect_pause_flaws(
@@ -249,7 +287,7 @@ def detect_pause_flaws(
                 )
             )
 
-    return flaws
+    return merge_and_filter_regions(flaws)
 
 
 def detect_filler_flaws(

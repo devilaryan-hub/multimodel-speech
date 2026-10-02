@@ -46,6 +46,12 @@ PITCH_VAR_IDEAL_MAX: float = 8.0
 ENERGY_Z_CLIP: float = 3.0              # clip energy z-scores beyond ±3σ
 SEVERITY_SCALE_FACTOR: float = 1.0      # multiplier before sigmoid/clip
 
+# Region consolidation.  A quarter-second is long enough to avoid reporting
+# transient frame/word-level noise as a listener-perceivable speech flaw.
+MIN_FLAW_DURATION_SEC: float = 0.25
+FLAW_MERGE_GAP_SEC: float = 0.20         # join same-type detections across brief gaps
+MONOTONE_MIN_REGION_SEC: float = 0.75    # require a sustained voiced monotone run
+
 # ---------------------------------------------------------------------------
 # Spectral, Clarity & Filler parameters
 # ---------------------------------------------------------------------------

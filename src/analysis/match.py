@@ -39,6 +39,8 @@ from src.config import (
     MATCH_PAUSE_MISSING_DELTA,
     MATCH_SIMILARITY_THRESHOLD,
     MATCH_SLOW_RATIO_MIN,
+    FLAW_MERGE_GAP_SEC,
+    MIN_FLAW_DURATION_SEC,
     SAMPLE_RATE,
 )
 from src.features.transcript import Word
@@ -322,16 +324,20 @@ def _merge_runs(
 
     for comp in comparisons:
         if flag_fn(comp):
-            run.append(comp)
-        else:
-            if run:
+            # Adjacent flagged words can have an unflagged word between them;
+            # time, rather than list position, defines whether they are one run.
+            if run and comp.candidate.start - run[-1].candidate.end > FLAW_MERGE_GAP_SEC:
                 _emit(run)
                 run = []
+            run.append(comp)
 
     if run:
         _emit(run)
 
-    return flaws
+    return [
+        flaw for flaw in flaws
+        if flaw.end - flaw.start >= MIN_FLAW_DURATION_SEC
+    ]
 
 
 # ---------------------------------------------------------------------------
