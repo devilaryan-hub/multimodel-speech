@@ -30,8 +30,15 @@ from src.config import (
     SCORE_K_PACE,
     SCORE_K_PAUSE,
     SCORE_K_PITCH,
+    SCORE_K_PACE_REL,
+    SCORE_K_PITCH_REL,
+    SCORE_K_ENERGY_REL,
+    SCORE_K_PAUSE_REL,
+    SCORE_LOCAL_WEIGHT,
+    SCORE_WINDOW_WORDS,
 )
 from src.schema import RubricDimension, RubricScore
+
 
 
 def _linear_penalty(value: float, lo: float, hi: float) -> float:
@@ -230,3 +237,232 @@ def compute_composite(scores: list[RubricScore]) -> float:
         return 0.0
     total_weight = sum(s.weight for s in scores)
     return round(sum(s.score * s.weight for s in scores) / total_weight, 4)
+
+
+# ---------------------------------------------------------------------------
+# Baseline-relative helpers
+# ---------------------------------------------------------------------------
+
+def _blend_global_local(global_vals: list[float], window: int = SCORE_WINDOW_WORDS, local_weight: float = SCORE_LOCAL_WEIGHT) -> float:
+    """Blend file-wide mean deviation with worst sliding-window deviation.
+
+    Combining both terms ensures a 3-6 word injected flaw still registers even
+    when the rest of the file is ideal. The blend formula is:
+        deviation = (1 - local_weight) * global_mean + local_weight * worst_window_mean
+
+    Args:
+        global_vals: Per-word deviation values (non-NaN).
+        window:      Sliding window size in words.
+        local_weight: Weight of the localized worst-window term (0-1).
+
+    Returns:
+        Blended scalar deviation >= 0.
+    """
+    if not global_vals:
+        return 0.0
+    global_mean = float(np.mean(global_vals))
+    if len(global_vals) < window:
+        return global_mean
+    worst = max(
+        float(np.mean(global_vals[i: i + window]))
+        for i in range(len(global_vals) - window + 1)
+    )
+    return (1.0 - local_weight) * global_mean + local_weight * worst
+
+
+# ---------------------------------------------------------------------------
+# Baseline-relative rubric scorers
+# ---------------------------------------------------------------------------
+
+def score_pace_relative(comparisons: list) -> RubricScore:
+    """Baseline-relative pace score.
+
+    Deviation per word = |log(candidate_duration / baseline_duration)|.
+    Identical timing gives deviation 0 and score 1.0.
+    Blends file-wide mean with worst sliding window.
+
+    Args:
+        comparisons: List of WordComparison from match.compare_words().
+
+    Returns:
+        RubricScore for PACE dimension.
+    """
+    devs = [
+        abs(math.log(c.duration_ratio))
+        for c in comparisons
+        if not math.isnan(c.duration_ratio) and c.duration_ratio > 0
+    ]
+    deviation = _blend_global_local(devs)
+    score = exponential_score(deviation, SCORE_K_PACE_REL)
+    details = (
+        f"Pace deviation {deviation:.3f} nats (mean |log dur-ratio| blended with "
+        f"worst {SCORE_WINDOW_WORDS}-word window)."
+    )
+    return RubricScore(
+        dimension=RubricDimension.PACE,
+        score=round(score, 4),
+        weight=RUBRIC_WEIGHTS.get("pace", 1.0),
+        details=details,
+    )
+
+
+def score_pause_pattern_relative(
+    comparisons: list,
+    cand_pauses: list[tuple[float, float]],
+    base_pauses: list[tuple[float, float]],
+    cand_duration: float,
+) -> RubricScore:
+    """Baseline-relative pause score.
+
+    Global deviation = extra candidate pause time vs baseline, as a fraction
+    of candidate audio duration (extra_pause_frac).
+    Local deviation = worst sliding window of positive pause_delta_s / window span.
+    Blends both terms.
+
+    Args:
+        comparisons:   List of WordComparison.
+        cand_pauses:   Pause intervals from the candidate audio.
+        base_pauses:   Pause intervals from the baseline audio.
+        cand_duration: Candidate audio duration in seconds.
+
+    Returns:
+        RubricScore for PAUSE_PATTERN dimension.
+    """
+    # Global term: extra silence as fraction of total duration
+    cand_total_pause = sum(p[1] - p[0] for p in cand_pauses)
+    base_total_pause = sum(p[1] - p[0] for p in base_pauses)
+    extra_pause_frac = max(0.0, cand_total_pause - base_total_pause) / max(cand_duration, 1.0)
+
+    # Local term: per-word positive pause_delta contributions
+    # Use the absolute pause_delta_s values per word for windowing
+    pause_devs = [
+        max(0.0, c.pause_delta_s)
+        for c in comparisons
+        if not math.isnan(c.pause_delta_s)
+    ]
+    # Normalise per-word local window by window duration span
+    W = SCORE_WINDOW_WORDS
+    local_pause = 0.0
+    if len(pause_devs) >= W:
+        # Use fraction of candidate duration for each window
+        for i in range(len(comparisons) - W + 1):
+            win = [c for c in comparisons[i: i + W] if not math.isnan(c.pause_delta_s)]
+            if not win:
+                continue
+            win_extra = sum(max(0.0, c.pause_delta_s) for c in win)
+            win_span = max(win[-1].candidate.end - win[0].candidate.start, 1.0)
+            local_pause = max(local_pause, win_extra / win_span)
+
+    deviation = (1.0 - SCORE_LOCAL_WEIGHT) * extra_pause_frac + SCORE_LOCAL_WEIGHT * local_pause
+    score = exponential_score(deviation, SCORE_K_PAUSE_REL)
+    details = (
+        f"Pause deviation {deviation:.4f} "
+        f"(extra pause fraction {extra_pause_frac:.3f} blended with "
+        f"worst {SCORE_WINDOW_WORDS}-word window {local_pause:.3f})."
+    )
+    return RubricScore(
+        dimension=RubricDimension.PAUSE_PATTERN,
+        score=round(score, 4),
+        weight=RUBRIC_WEIGHTS.get("pause_pattern", 1.0),
+        details=details,
+    )
+
+
+def score_pitch_variation_relative(
+    comparisons: list,
+    base_pitch: np.ndarray,
+    cand_pitch: np.ndarray,
+) -> RubricScore:
+    """Baseline-relative pitch variation score.
+
+    Deviation = |log(candidate_voiced_std / baseline_voiced_std)| computed per
+    word (NaN-aware: words where either side has <2 voiced frames are skipped).
+    Blends file-wide mean with worst sliding window.
+
+    Args:
+        comparisons: List of WordComparison.
+        base_pitch:  Baseline pitch array (semitones, NaN=unvoiced).
+        cand_pitch:  Candidate pitch array.
+
+    Returns:
+        RubricScore for PITCH_VARIATION dimension.
+    """
+    from src.config import HOP_LENGTH, SAMPLE_RATE
+
+    def _word_pitch_std(word, pitch: np.ndarray) -> float:
+        f_start = int(round(word.start * SAMPLE_RATE / HOP_LENGTH))
+        f_end = max(f_start + 1, int(round(word.end * SAMPLE_RATE / HOP_LENGTH)))
+        f_start = max(0, min(f_start, len(pitch)))
+        f_end = max(f_start, min(f_end, len(pitch)))
+        voiced = pitch[f_start:f_end]
+        voiced = voiced[np.isfinite(voiced)]
+        return float(np.std(voiced)) if voiced.size >= 2 else float("nan")
+
+    devs = []
+    for c in comparisons:
+        if c.candidate is None:
+            continue
+        cw = c.candidate
+        c_std = _word_pitch_std(cw, cand_pitch)
+        if math.isnan(c_std) or c_std < 1e-6:
+            continue
+        # Use pitch_range_ratio as a proxy: ratio = cand_pitch_range / base_pitch_range
+        # Skip NaN (unvoiced on either side) and zero/negative values
+        if not math.isnan(c.pitch_range_ratio) and c.pitch_range_ratio > 0:
+            devs.append(abs(math.log(c.pitch_range_ratio)))
+
+
+    # Fallback: compare whole-file voiced std
+    if not devs:
+        base_voiced = base_pitch[np.isfinite(base_pitch)]
+        cand_voiced = cand_pitch[np.isfinite(cand_pitch)]
+        b_std = float(np.std(base_voiced)) if base_voiced.size >= 2 else 1.0
+        c_std_global = float(np.std(cand_voiced)) if cand_voiced.size >= 2 else 1.0
+        deviation = abs(math.log(max(c_std_global, 1e-6) / max(b_std, 1e-6)))
+    else:
+        deviation = _blend_global_local(devs)
+
+    score = exponential_score(deviation, SCORE_K_PITCH_REL)
+    details = (
+        f"Pitch deviation {deviation:.3f} nats (mean |log pitch-range-ratio| "
+        f"blended with worst {SCORE_WINDOW_WORDS}-word window)."
+    )
+    return RubricScore(
+        dimension=RubricDimension.PITCH_VARIATION,
+        score=round(score, 4),
+        weight=RUBRIC_WEIGHTS.get("pitch_variation", 1.0),
+        details=details,
+    )
+
+
+def score_energy_consistency_relative(comparisons: list) -> RubricScore:
+    """Baseline-relative energy consistency score.
+
+    Deviation per word = |candidate_energy_z - baseline_energy_z|.
+    Identical energy gives deviation 0 and score 1.0.
+    Blends file-wide mean with worst sliding window.
+
+    Args:
+        comparisons: List of WordComparison.
+
+    Returns:
+        RubricScore for ENERGY_CONSISTENCY dimension.
+    """
+    devs = [
+        abs(c.energy_delta)
+        for c in comparisons
+        if not math.isnan(c.energy_delta)
+    ]
+    deviation = _blend_global_local(devs)
+    score = exponential_score(deviation, SCORE_K_ENERGY_REL)
+    details = (
+        f"Energy deviation {deviation:.3f} z-units (mean |energy-delta| "
+        f"blended with worst {SCORE_WINDOW_WORDS}-word window)."
+    )
+    return RubricScore(
+        dimension=RubricDimension.ENERGY_CONSISTENCY,
+        score=round(score, 4),
+        weight=RUBRIC_WEIGHTS.get("energy_consistency", 1.0),
+        details=details,
+    )
+

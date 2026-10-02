@@ -175,3 +175,21 @@ RUBRIC_WEIGHTS: dict[str, float] = {
     "energy_consistency": 1.0,
     "pause_pattern": 1.0,
 }
+
+# ---------------------------------------------------------------------------
+# Baseline-relative scoring — combined global+local deviation
+# ---------------------------------------------------------------------------
+# Sliding window size (number of words) for localized worst-case deviation
+SCORE_WINDOW_WORDS: int = 8
+
+# Blend weight: final_deviation = (1 - w) * global_dev + w * local_dev
+# local_dev is the worst-window deviation; 0.0 = purely global, 1.0 = purely local.
+# 0.5 weights them equally, ensuring a 3-6 word injected flaw has strong signal.
+SCORE_LOCAL_WEIGHT: float = 0.5
+
+# Baseline-relative k values (same as above but separated for clarity)
+SCORE_K_PACE_REL: float = 6.0    # |log(dur_ratio)|: 0.18 nats → e^(-6*0.18)≈0.34
+SCORE_K_PITCH_REL: float = 3.0   # |log(pitch_std_ratio)|: penalise large pitch changes
+SCORE_K_ENERGY_REL: float = 2.0  # mean |energy_delta_z|
+SCORE_K_PAUSE_REL: float = 8.0   # extra_pause_frac: 0.08 → e^(-8*0.08)≈0.53
+

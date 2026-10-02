@@ -92,4 +92,20 @@ This document records architectural, mathematical, and algorithmic design choice
 - **Rationale**: An ideal reference speech naturally contains expressive stylistic features (e.g., steady pitch on a clause, deliberate rhetorical pauses) that absolute heuristic thresholds falsely flag as flaws. In contrastive evaluation, flaws represent meaningful deviations from the exemplar speaker rather than deviations from arbitrary static bounds. Comparing an ideal recording with itself now deterministically yields zero flaw regions.
 
 
+---
+
+## M10: Baseline-Relative Rubric Scoring
+
+### Decision: Deviation-Based Scoring with Global + Localized Blend
+
+- **Choice**: When a baseline recording is provided, all four rubric dimensions (pace, pause_pattern, pitch_variation, energy_consistency) now use baseline-relative deviation scores (`score = exp(-k * deviation)`) instead of absolute ideal-range penalties. The four new functions (`score_pace_relative`, `score_pause_pattern_relative`, `score_pitch_variation_relative`, `score_energy_consistency_relative`) live in `src/analysis/scoring.py`; the original absolute-range scorers remain for no-baseline mode only.
+- **Formulas**:
+  - **pace**: deviation = mean |log(duration_ratio)| per matched word
+  - **pause_pattern**: deviation = blend of (extra_candidate_pause_time / cand_duration) and worst-window (extra_pause_delta / window_span)
+  - **pitch_variation**: deviation = mean |log(pitch_range_ratio)| per voiced matched word; falls back to whole-file std log-ratio if no per-word data
+  - **energy_consistency**: deviation = mean |energy_delta_z| per matched word
+- **Global + Local Blend**: `final_deviation = (1 - SCORE_LOCAL_WEIGHT) * global_mean + SCORE_LOCAL_WEIGHT * worst_window_mean` where SCORE_WINDOW_WORDS=8 and SCORE_LOCAL_WEIGHT=0.5. This ensures a 3-6 word flaw isn't diluted by 100 ideal words: the worst 8-word sliding window captures the peak deviation even when the file-wide mean is low.
+- **Verification**: speech1.wav vs itself gives composite 1.0000, all dimensions 1.0000. pause_excessive sev1/3/5 composites are 0.7413, 0.5401, 0.4405 (monotonically decreasing as required).
+- **k values**: SCORE_K_PACE_REL=6.0, SCORE_K_PITCH_REL=3.0, SCORE_K_ENERGY_REL=2.0, SCORE_K_PAUSE_REL=8.0 (all in src/config.py). Pause k is highest because the pause local-window fraction can exceed 1.0 for large insertions.
+- **Summary fix**: `_build_summary` now uses plain ASCII `-` instead of Unicode em-dash (eliminates UTF-8/Latin-1 garble), overrides grade to at most "fair" when any dimension < 0.70 or any flaw region exists, and cites the lowest-scoring dimension and detected flaw types.
 

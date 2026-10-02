@@ -31,6 +31,10 @@ from src.analysis.scoring import (
     score_pace,
     score_pause_pattern,
     score_pitch_variation,
+    score_energy_consistency_relative,
+    score_pace_relative,
+    score_pause_pattern_relative,
+    score_pitch_variation_relative,
 )
 from src.explain.templates import explain
 from src.features.alignment import align_features
@@ -39,6 +43,7 @@ from src.features.forced_align import align_transcript
 from src.features.transcript import Word, estimate_word_times, tokenize, words_to_pace_wpm
 from src.schema import EvaluationResult, FlawRegion, RubricScore
 from src.analysis.match import compare_words, detect_from_matches, match_words
+
 
 
 def _seed_all() -> None:
@@ -54,32 +59,62 @@ def _build_summary(
 ) -> str:
     """Build a one-paragraph human-readable summary of the evaluation.
 
+    Rules:
+    - Grade is derived from the composite score, but overridden to at most
+      'fair' when any dimension score is below 0.70 or any flaw regions exist.
+    - Cites the lowest-scoring dimension and its score.
+    - Cites the flaw region count when non-zero.
+    - Uses only plain ASCII punctuation to avoid encoding artefacts.
+
     Args:
         composite:     Overall composite score.
         rubric_scores: Per-dimension scores.
         flaw_regions:  Detected flaw regions.
 
     Returns:
-        Summary string.
+        Summary string (plain ASCII, no Unicode special chars).
     """
+    # Determine grade from composite
     grade = (
         "excellent" if composite >= 0.85
         else "good" if composite >= 0.70
         else "fair" if composite >= 0.55
         else "needs improvement"
     )
+
+    # Override grade if any dimension is low or flaws detected
+    n_flaws = len(flaw_regions)
+    min_score = min((s.score for s in rubric_scores), default=1.0)
+    if min_score < 0.70 or n_flaws > 0:
+        if grade in ("excellent", "good"):
+            grade = "fair" if composite >= 0.55 else "needs improvement"
+
+    # Find worst dimension
+    worst = min(rubric_scores, key=lambda s: s.score) if rubric_scores else None
     dims = ", ".join(
         f"{s.dimension.value} ({s.score:.2f})" for s in rubric_scores
     )
-    n_flaws = len(flaw_regions)
-    flaw_str = (
-        f"No flaw regions were detected."
-        if n_flaws == 0
-        else f"{n_flaws} flaw region(s) were detected across the recording."
-    )
+
+    # Flaw string
+    if n_flaws == 0:
+        flaw_str = "No flaw regions were detected."
+    else:
+        types = sorted({r.flaw_type.value for r in flaw_regions})
+        flaw_str = (
+            f"{n_flaws} flaw region(s) detected "
+            f"({', '.join(types)})."
+        )
+
+    # Worst dimension citation
+    worst_str = ""
+    if worst and worst.score < 0.90:
+        worst_str = (
+            f" Lowest dimension: {worst.dimension.value} ({worst.score:.2f})."
+        )
+
     return (
         f"Overall performance is {grade} with a composite score of {composite:.2f}. "
-        f"Rubric breakdown — {dims}. {flaw_str}"
+        f"Rubric breakdown - {dims}.{worst_str} {flaw_str}"
     )
 
 
@@ -142,17 +177,40 @@ def evaluate(
     wpm = words_to_pace_wpm(words)
 
     if has_baseline:
-        # Baseline word timings for contrastive detection
+        # Baseline word timings for contrastive scoring and detection
         base_aligned = align_transcript(baseline_path, transcript, duration=base.duration)
         base_words = [Word(text=aw["word"], start=aw["start"], end=aw["end"]) for aw in base_aligned]
+        # Compute word comparisons once — shared by scoring and detection steps
+        matched = match_words(base_words, words)
+        comparisons = compare_words(
+            matched,
+            baseline_pitch=base.pitch_st,
+            candidate_pitch=cand.pitch_st,
+            baseline_energy=base.energy_z,
+            candidate_energy=cand.energy_z,
+        )
 
     # ── 4. Rubric scoring ─────────────────────────────────────────────────
-    rubric: list[RubricScore] = [
-        score_pace(wpm),
-        score_pitch_variation(w_pitch),
-        score_energy_consistency(w_energy),
-        score_pause_pattern(cand.pauses, cand.duration, len(tokens)),
-    ]
+    if has_baseline:
+        # Baseline-relative scoring: every dimension measures deviation from
+        # the reference read. Identical inputs give deviation=0, score=1.0.
+        # Standalone absolute-range scorers are NOT used in this mode.
+        rubric: list[RubricScore] = [
+            score_pace_relative(comparisons),
+            score_pitch_variation_relative(comparisons, base.pitch_st, cand.pitch_st),
+            score_energy_consistency_relative(comparisons),
+            score_pause_pattern_relative(
+                comparisons, cand.pauses, base.pauses, cand.duration
+            ),
+        ]
+    else:
+        # No-baseline mode: absolute heuristic ranges (original behaviour).
+        rubric = [
+            score_pace(wpm),
+            score_pitch_variation(w_pitch),
+            score_energy_consistency(w_energy),
+            score_pause_pattern(cand.pauses, cand.duration, len(tokens)),
+        ]
     composite = compute_composite(rubric)
 
     # ── 5. Flaw detection ─────────────────────────────────────────────────
@@ -162,14 +220,6 @@ def evaluate(
         # only when no baseline is given, because an ideal reference speech can
         # itself contain natural stylistic variations (e.g., steady pitch on a clause,
         # natural rhetorical pauses) that absolute heuristic thresholds would falsely flag.
-        matched = match_words(base_words, words)
-        comparisons = compare_words(
-            matched,
-            baseline_pitch=base.pitch_st,
-            candidate_pitch=cand.pitch_st,
-            baseline_energy=base.energy_z,
-            candidate_energy=cand.energy_z,
-        )
         flaw_regions = detect_from_matches(comparisons)
     else:
         # Standalone mode: when no reference baseline is given, evaluate against
