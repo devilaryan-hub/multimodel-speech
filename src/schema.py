@@ -19,17 +19,17 @@ from pydantic import BaseModel, Field, model_validator
 class FlawType(str, Enum):
     """Taxonomy of detectable speech flaws."""
 
-    PACE_TOO_FAST = "pace_too_fast"
-    PACE_TOO_SLOW = "pace_too_slow"
-    PITCH_MONOTONE = "pitch_monotone"
-    PITCH_ERRATIC = "pitch_erratic"
-    ENERGY_LOW = "energy_low"
-    ENERGY_INCONSISTENT = "energy_inconsistent"
-    PAUSE_MISSING = "pause_missing"
-    PAUSE_EXCESSIVE = "pause_excessive"
-    PAUSE_MISPLACED = "pause_misplaced"
-    FILLER = "filler"
-    UNCLEAR = "unclear"
+    PACE_TOO_FAST = "PACE_TOO_FAST"
+    PACE_TOO_SLOW = "PACE_TOO_SLOW"
+    PITCH_MONOTONE = "PITCH_MONOTONE"
+    PITCH_ERRATIC = "PITCH_ERRATIC"
+    ENERGY_LOW = "ENERGY_LOW"
+    ENERGY_INCONSISTENT = "ENERGY_INCONSISTENT"
+    PAUSE_MISSING = "PAUSE_MISSING"
+    PAUSE_EXCESSIVE = "PAUSE_EXCESSIVE"
+    PAUSE_MISPLACED = "PAUSE_MISPLACED"
+    FILLER = "FILLER"
+    UNCLEAR = "UNCLEAR"
 
 
 class FlawRegion(BaseModel):
